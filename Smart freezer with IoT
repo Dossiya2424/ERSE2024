@@ -1,0 +1,356 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DHT.h>
+
+// Nom du réseau Wi-Fi et mot de passe
+const char* ssid = "Lad27";
+const char* password = "24801010";
+
+// Créer une instance du serveur web sur le port 80
+WebServer server(80);
+
+// Définir la tension constante
+const float tension = 12.0; // en volts
+float courant = 15.0; // en ampères, initialisé à 15A
+float courantStable = 10.0; // courant stabilisé à 10A
+bool eColdState = false; // État du bouton E-Cold
+
+// Simuler les valeurs pour les autres paramètres
+float puissance; // en watts
+float energie;   // en kWh
+float tarif = 0.0125; // en FCFA par kWh
+float facture;   // en FCFA
+float factureTotale; // Facture totale en FCFA
+
+// Déclarer la variable de température globale
+float temperature = 10.0; // Valeur initiale
+float humidity; // Humidité
+float heatIndex; // Niveau de chaleur
+
+// Broche pour le capteur DHT22
+#define DHTPIN 23
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
+
+unsigned long lastUpdateTime = 0;
+const unsigned long updateInterval = 1000; // 1 seconde en millisecondes
+const unsigned long powerUpdateInterval = 5000; // 5 secondes en millisecondes
+
+// Stocker l'évolution de la facture
+const int maxDataPoints = 30; // Nombre de points de données à afficher pour chaque graphique
+float factureHistory[maxDataPoints] = {0}; // Historique de la facture
+float tensionHistory[maxDataPoints] = {0}; // Historique de la tension
+float courantHistory[maxDataPoints] = {0}; // Historique du courant
+float puissanceHistory[maxDataPoints] = {0}; // Historique de la puissance
+float energieHistory[maxDataPoints] = {0}; // Historique de l'énergie
+float temperatureHistory[maxDataPoints] = {0}; // Historique de la température
+float humidityHistory[maxDataPoints] = {0}; // Historique de l'humidité
+float heatIndexHistory[maxDataPoints] = {0}; // Historique du niveau de chaleur
+int currentDataPoint = 0;
+
+void setup() {
+  // Initialisation de la communication série à 115200 bauds
+  Serial.begin(115200);
+
+  // Initialisation du capteur DHT
+  dht.begin();
+
+  // Connexion au réseau Wi-Fi
+  Serial.print("Connexion au reseau ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+
+  // Attendre la connexion
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+
+  // Connexion réussie
+  Serial.println("");
+  Serial.println("Connexion Wi-Fi etablie avec succes !");
+  Serial.println("Adresse IP attribuee : ");
+  Serial.println(WiFi.localIP());
+
+  // Définir les routes du serveur
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  server.on("/toggle", handleToggle);
+
+  // Démarrer le serveur
+  server.begin();
+  Serial.println("Serveur HTTP demarre");
+
+  // Initialiser les valeurs calculées
+  updateValues();
+}
+
+void loop() {
+  // Gérer les requêtes du client
+  server.handleClient();
+
+  // Mettre à jour les valeurs toutes les secondes
+  if (millis() - lastUpdateTime > updateInterval) {
+    lastUpdateTime = millis();
+    updateValues();
+    updateTotalBill();
+  }
+}
+
+// Fonction pour lire la température et l'humidité depuis le capteur DHT22
+void readDHT22() {
+  float tempC = dht.readTemperature();
+  float hum = dht.readHumidity();
+  if (isnan(tempC) || isnan(hum)) {
+    Serial.println("Echec de lecture du capteur DHT22 !");
+    temperature = 10.0; // Valeur par défaut en cas d'échec de lecture
+    humidity = 50.0; // Valeur par défaut en cas d'échec de lecture
+  } else {
+    temperature = tempC;
+    humidity = hum;
+    heatIndex = dht.computeHeatIndex(temperature, humidity, false); // Calculer le niveau de chaleur
+  }
+}
+
+// Fonction pour mettre à jour les valeurs simulées
+void updateValues() {
+  if (eColdState) {
+    if (courant > courantStable) {
+      courant -= 1.0; // Diminuer le courant progressivement jusqu'à atteindre 10A
+    } else {
+      courant = courantStable; // Stabiliser le courant à 10A
+    }
+  } else {
+    courant = 0; // Mettre le courant à 0 lorsque E-Cold est éteint
+  }
+
+  puissance = tension * courant; // P = V * I
+
+  // Mettre à jour l'énergie et la facture toutes les 5 secondes
+  if (millis() % powerUpdateInterval < updateInterval) {
+    energie += puissance * (powerUpdateInterval / 3600000.0); // Convertir les millisecondes en heures
+    facture = energie * tarif; // Calculer la facture
+  }
+
+  // Lire les valeurs depuis le capteur DHT22
+  readDHT22();
+
+  // Mettre à jour les historiques des paramètres
+  tensionHistory[currentDataPoint] = tension;
+  courantHistory[currentDataPoint] = courant;
+  puissanceHistory[currentDataPoint] = puissance;
+  energieHistory[currentDataPoint] = energie;
+  factureHistory[currentDataPoint] = factureTotale;
+  temperatureHistory[currentDataPoint] = temperature;
+  humidityHistory[currentDataPoint] = humidity;
+  heatIndexHistory[currentDataPoint] = heatIndex;
+
+  currentDataPoint = (currentDataPoint + 1) % maxDataPoints;
+}
+
+// Fonction pour mettre à jour la facture totale
+void updateTotalBill() {
+  factureTotale += facture;
+}
+
+// Fonction pour gérer les requêtes à la racine
+void handleRoot() {
+  // Créer la page HTML avec style et JavaScript
+  String page = "<html><head>";
+  page += "<style>";
+  page += "body { font-family: Arial, sans-serif; background-color: #f0f8ff; color: #333; text-align: center; }";
+  page += ".dashboard { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; padding: 20px; }";
+  page += ".circle-container { display: flex; flex-direction: column; align-items: center; }";
+  page += ".circle { width: 150px; height: 150px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin-top: 10px; }";
+  page += ".tension { background-color: #ff9999; }";  // Rouge clair
+  page += ".courant { background-color: #99ccff; }";  // Bleu clair
+  page += ".puissance { background-color: #99ff99; }";  // Vert clair
+  page += ".energie { background-color: #ffff99; }";  // Jaune clair
+  page += ".facture { background-color: #ffcc99; }";  // Orange clair
+  page += ".factureTotale { background-color: #cc99ff; }";  // Violet clair
+  page += ".temperature { background-color: #1e90ff; color: #fff; }"; // Bleu pour la temperature
+  page += ".humidity { background-color: #66ccff; }";  // Bleu clair pour l'humidité
+  page += ".heatIndex { background-color: #ff6666; }";  // Rouge clair pour le niveau de chaleur
+  page += ".circle h2 { margin: 0; color: #005b96; }";
+  page += ".eCold { background-color: #000; color: #fff; font-size: 20px; cursor: pointer; }"; // Bouton E-Cold
+  page += "#chart-container { width: 80%; margin: auto; }";
+  page += "</style>";
+  page += "<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>"; // Ajouter Chart.js
+  page += "<script>";
+  page += "let chartTension, chartCourant, chartPuissance, chartEnergie, chartFacture, chartTemperature, chartHumidity, chartHeatIndex;";
+  page += "function updateData() {";
+  page += "  fetch('/data').then(response => response.json()).then(data => {";
+  page += "    document.getElementById('tension').innerText = data.tension + ' V';";
+  page += "    document.getElementById('courant').innerText = data.courant + ' A';";
+  page += "    document.getElementById('puissance').innerText = data.puissance + ' W';";
+  page += "    document.getElementById('energie').innerText = data.energie.toFixed(2) + ' kWh';";
+  page += "    document.getElementById('facture').innerText = data.facture.toFixed(2) + ' FCFA';";
+  page += "    document.getElementById('factureTotale').innerText = data.factureTotale.toFixed(2) + ' FCFA';";
+  page += "    document.getElementById('temperature').innerText = data.temperature + ' °C';";
+  page += "    document.getElementById('humidity').innerText = data.humidity + ' %';";
+  page += "    document.getElementById('heatIndex').innerText = data.heatIndex + ' °C';";
+  page += "    updateCharts(data);";
+  page += "  });";
+  page += "}";
+  page += "function updateCharts(data) {";
+  page += "  updateChart(chartTension, data.historyTension);";
+  page += "  updateChart(chartCourant, data.historyCourant);";
+  page += "  updateChart(chartPuissance, data.historyPuissance);";
+  page += "  updateChart(chartEnergie, data.historyEnergie);";
+  page += "  updateChart(chartFacture, data.historyFacture);";
+  page += "  updateChart(chartTemperature, data.historyTemperature);";
+  page += "  updateChart(chartHumidity, data.historyHumidity);";
+  page += "  updateChart(chartHeatIndex, data.historyHeatIndex);";
+  page += "}";
+  page += "function updateChart(chart, history) {";
+  page += "  if (chart) {";
+  page += "    chart.data.labels = Array.from({ length: history.length }, (_, i) => i + 1);";
+  page += "    chart.data.datasets[0].data = history;";
+  page += "    chart.update();";
+  page += "  }";
+  page += "}";
+  page += "function createCharts() {";
+  page += "  chartTension = createChart('chartTension', 'Tension (V)', 'rgba(255, 99, 132, 0.2)', 'rgba(255, 99, 132, 1)');";
+  page += "  chartCourant = createChart('chartCourant', 'Courant (A)', 'rgba(54, 162, 235, 0.2)', 'rgba(54, 162, 235, 1)');";
+  page += "  chartPuissance = createChart('chartPuissance', 'Puissance (W)', 'rgba(75, 192, 192, 0.2)', 'rgba(75, 192, 192, 1)');";
+  page += "  chartEnergie = createChart('chartEnergie', 'Energie (kWh)', 'rgba(255, 206, 86, 0.2)', 'rgba(255, 206, 86, 1)');";
+  page += "  chartFacture = createChart('chartFacture', 'Facture (FCFA)', 'rgba(153, 102, 255, 0.2)', 'rgba(153, 102, 255, 1)');";
+  page += "  chartTemperature = createChart('chartTemperature', 'Température (°C)', 'rgba(255, 159, 64, 0.2)', 'rgba(255, 159, 64, 1)');";
+  page += "  chartHumidity = createChart('chartHumidity', 'Humidité (%)', 'rgba(99, 255, 132, 0.2)', 'rgba(99, 255, 132, 1)');";
+  page += "  chartHeatIndex = createChart('chartHeatIndex', 'Niveau de Chaleur (°C)', 'rgba(255, 99, 132, 0.2)', 'rgba(255, 99, 132, 1)');";
+  page += "}";
+  page += "function createChart(id, label, backgroundColor, borderColor) {";
+  page += "  const ctx = document.getElementById(id).getContext('2d');";
+  page += "  return new Chart(ctx, {";
+  page += "    type: 'line',";
+  page += "    data: {";
+  page += "      labels: [],";
+  page += "      datasets: [{";
+  page += "        label: label,";
+  page += "        data: [],";
+  page += "        backgroundColor: backgroundColor,";
+  page += "        borderColor: borderColor,";
+  page += "        borderWidth: 1";
+  page += "      }]";
+  page += "    },";
+  page += "    options: {";
+  page += "      scales: {";
+  page += "        y: {";
+  page += "          beginAtZero: true";
+  page += "        }";
+  page += "      }";
+  page += "    }";
+  page += "  });";
+  page += "}";
+  page += "function toggleECold() {";
+  page += "  fetch('/toggle').then(response => response.text()).then(state => {";
+  page += "    document.getElementById('eCold').innerText = state;";
+  page += "  });";
+  page += "}";
+  page += "window.onload = function() { createCharts(); updateData(); };";
+  page += "setInterval(updateData, 1000);"; // Mise à jour toutes les secondes
+  page += "</script></head><body>";
+  page += "<h1>Bonjour je suis Dossiya Dakou</h1>";
+  page += "<h2>Soutenance : Licence ERSE2024</h2>";
+  page += "<h3>Theme: Refrigerateur hybride 12V inteligent</h3>";
+  page += "<div class='dashboard'>";
+  page += "<div class='circle-container'><h3>Tension</h3><div class='circle tension'><h2 id='tension'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Courant</h3><div class='circle courant'><h2 id='courant'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Puissance</h3><div class='circle puissance'><h2 id='puissance'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Energie</h3><div class='circle energie'><h2 id='energie'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Facture</h3><div class='circle facture'><h2 id='facture'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Facture Totale</h3><div class='circle factureTotale'><h2 id='factureTotale'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Température</h3><div class='circle temperature' id='temperatureCircle'><h2 id='temperature'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Humidité</h3><div class='circle humidity'><h2 id='humidity'></h2></div></div>";
+  page += "<div class='circle-container'><h3>Niveau de Chaleur</h3><div class='circle heatIndex'><h2 id='heatIndex'></h2></div></div>";
+  page += "<div class='circle-container'><h3>E-Cold</h3><div class='circle eCold' id='eCold' onclick='toggleECold()'><h2>E-Cold</h2></div></div>";
+  page += "</div>";
+  page += "<div id='chart-container'>";
+  page += "<canvas id='chartTension'></canvas>";
+  page += "<canvas id='chartCourant'></canvas>";
+  page += "<canvas id='chartPuissance'></canvas>";
+  page += "<canvas id='chartEnergie'></canvas>";
+  page += "<canvas id='chartFacture'></canvas>";
+  page += "<canvas id='chartTemperature'></canvas>";
+  page += "<canvas id='chartHumidity'></canvas>";
+  page += "<canvas id='chartHeatIndex'></canvas>";
+  page += "</div>";
+  page += "</body></html>";
+
+  // Envoyer la réponse
+  server.send(200, "text/html", page);
+}
+
+// Fonction pour gérer les requêtes de données (suite)
+void handleData() {
+  // Créer une réponse JSON avec les valeurs actuelles
+  String json = "{";
+  json += "\"tension\":" + String(tension) + ",";
+  json += "\"courant\":" + String(courant) + ",";
+  json += "\"puissance\":" + String(puissance) + ",";
+  json += "\"energie\":" + String(energie) + ",";
+  json += "\"facture\":" + String(facture) + ",";
+  json += "\"factureTotale\":" + String(factureTotale) + ",";
+  json += "\"temperature\":" + String(temperature) + ",";
+  json += "\"humidity\":" + String(humidity) + ",";
+  json += "\"heatIndex\":" + String(heatIndex) + ",";
+  json += "\"historyFacture\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(factureHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyTension\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(tensionHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyCourant\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(courantHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyPuissance\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(puissanceHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyEnergie\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(energieHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyTemperature\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(temperatureHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyHumidity\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(humidityHistory[i], 2);
+  }
+  json += "],";
+  json += "\"historyHeatIndex\":[";
+  for (int i = 0; i < maxDataPoints; ++i) {
+    if (i > 0) json += ",";
+    json += String(heatIndexHistory[i], 2);
+  }
+  json += "]";
+  json += "}";
+
+  // Envoyer la réponse JSON
+  server.send(200, "application/json", json);
+}
+
+// Fonction pour gérer le basculement de l'état de E-Cold
+void handleToggle() {
+  eColdState = !eColdState; // Inverser l'état actuel
+  String state = eColdState ? "E-Cold Allume" : "E-Cold Eteint";
+  server.send(200, "text/plain", state);
+}
