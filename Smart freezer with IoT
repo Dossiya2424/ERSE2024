@@ -3,8 +3,8 @@
 #include <DHT.h>
 
 // Nom du réseau Wi-Fi et mot de passe
-const char* ssid = "Lad27";
-const char* password = "24801010";
+const char* ssid = "A";
+const char* password = "94272424";
 
 // Créer une instance du serveur web sur le port 80
 WebServer server(80);
@@ -18,7 +18,7 @@ bool eColdState = false; // État du bouton E-Cold
 // Simuler les valeurs pour les autres paramètres
 float puissance; // en watts
 float energie;   // en kWh
-float tarif = 0.0125; // en FCFA par kWh
+float tarif = 0.00125; // en FCFA par kWh
 float facture;   // en FCFA
 float factureTotale; // Facture totale en FCFA
 
